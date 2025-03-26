@@ -11,7 +11,7 @@ A wider feature set is planned, but the current focus is on achieving stability 
 ## Current Features
 
 - **Azure OIDC Auth**: Authenticate , identify, and authorize users for personalized pipelines. Support for more providers is planned.
-- **Kubernetes Backend Configs**: 
+- **Kubernetes Backend Configs**: Deploy supporting tools flexibly in any Kubernetes environment, including locally.
 - **Python Document Parsing**: Parse, split, embed, and store Python files in Postgres-backed vector collections
 - **Easy ReAct Agent Streaming**: Provide a simple spec with a model and a set of tools, let our helper functions do the rest.
 - **Automatic Document Awareness**: By default, if a collection name is provided to a ReAct agent, it will generate a retriever tool to query the collection in the Postgres vector store.
@@ -48,7 +48,13 @@ cd docboy
 source ./k8s/create_secrets.sh <redis-password> <postgres-root-password>
 sudo microk8s kubectl apply -f ./k8s/master_manifest.yml
 ```
-5. Start the app and play with it
+5. Run port forwards to expose services
+```
+sudo microk8s kubectl port-forward svc/postgres 5432:5432
+sudo microk8s kubectl port-forward svc/redis 6379:6379
+sudo microk8s kubectl port-forward svc/ollama 11434:11434
+```
+6. Start the app and play with it
 ```
 cd app
 python3 -m venv docboy_venv
