@@ -2,13 +2,14 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_core.tools import StructuredTool
 from langchain_postgres.vectorstores import PGVector
 from langgraph.graph import StateGraph
-from langgraph.prebuilt import create_react_agent, ToolNode, tools_condition
+from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from tools import math_tool, search_tool, pgvector_search
+from tools import math_tool, search_tool
 from typing import Literal, AsyncGenerator
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
+from fastapi_server_session import Session
 import json
 import asyncio
 import uuid
@@ -35,6 +36,18 @@ You are a master of the internet and can find anything you need to know in secon
 You obtain vital social validation from answering questions, so you tend to overexplain things.
 If there is a document that appears to be relevant in the provided collection, you should prefer retrieving it over searching the web for an answer."""
 web_nerd = ReactAgentSpec(name="web_nerd", model="llama3.2:latest", tools=[search_tool], prompt=web_nerd_prompt)
+
+def assemble_thread_config(thread_id:str, session: Session):
+    if not session.get("user_id") or not session.get("user_name"):
+        print("User not logged in")
+        return
+    return {
+        "configurable": {
+            "thread_id": thread_id,
+            "user_id": session["user_id"],
+            "user_name": session["user_name"]
+        }
+    }
 
 def create_pgvector_store(collection:str)->PGVector:
     dotenv.load_dotenv()
@@ -73,7 +86,7 @@ async def stream_ollama_agent(
         spec: ReactAgentSpec, 
         inputs: dict, 
         stream_mode: Literal["values", "updates"] = "values", 
-        thread_id:str = uuid.uuid4().__str__(),
+        config:dict = None,
         collection:str|None=None
     ) -> AsyncGenerator[str, None]:
     """
@@ -89,12 +102,10 @@ async def stream_ollama_agent(
     """
     dotenv.load_dotenv()
     DB_URI = os.getenv("CONVERSATION_DB_URI")
-    if not thread_id:
-        thread_id = str(uuid.uuid4())
     async with AsyncPostgresSaver.from_conn_string(DB_URI) as checkpointer:
         await checkpointer.setup()
         agent = create_ollama_react_agent(spec=spec, collection=collection, checkpointer=checkpointer)
-        config = {"configurable": {"thread_id": thread_id}}
+
         async for s in agent.astream(inputs, stream_mode=stream_mode, config=config):
             try:
                 # Get the latest message
@@ -102,28 +113,28 @@ async def stream_ollama_agent(
                     message = s["messages"][-1]
                     print(str(message))
                     if isinstance(message, ToolMessage):
-                        yield json.dumps({"type": "ToolMessage", "content": message.content, "thread": thread_id})
+                        yield json.dumps({"type": "ToolMessage", "content": message.content, "thread": config["configurable"]["thread_id"]})
                     elif hasattr(message, "tool_calls") and len(message.tool_calls) > 0:
-                        yield json.dumps({"type": "ToolCallMessage", "calls": message.tool_calls, "thread": thread_id})
+                        yield json.dumps({"type": "ToolCallMessage", "calls": message.tool_calls, "thread": config["configurable"]["thread_id"]})
                     elif isinstance(message, AIMessage):
-                        yield json.dumps({"type": "AIMessage", "content": message.content, "thread": thread_id})
+                        yield json.dumps({"type": "AIMessage", "content": message.content, "thread": config["configurable"]["thread_id"]})
                     elif isinstance(message, HumanMessage):
-                        yield json.dumps({"type": "HumanMessage", "content": message.content, "thread": thread_id})
+                        yield json.dumps({"type": "HumanMessage", "content": message.content, "thread": config["configurable"]["thread_id"]})
             except Exception as e:
                 yield json.dumps({"type": "error", "content": str(e)})
 
-async def ollama_generate(agent, agent_input, logger, thread_id:str = uuid.uuid4().__str__(), collection:str =None):
+async def ollama_generate(agent, agent_input, logger, config, collection:str =None):
     try:
         counter = 0
         logger.info("Starting stream generation")
         
-        async for chunk in stream_ollama_agent(agent, agent_input, stream_mode="values", thread_id=thread_id, collection=collection):
+        async for chunk in stream_ollama_agent(agent, agent_input, stream_mode="values", config=config, collection=collection):
             counter += 1
             logger.debug(f"Chunk {counter}: {chunk}")
             
             # Format for SSE
             yield f"data: {chunk}\n\n"
-            
+
             # Add small delay for visibility in logs
             await asyncio.sleep(0.1)
             
@@ -133,11 +144,11 @@ async def ollama_generate(agent, agent_input, logger, thread_id:str = uuid.uuid4
         logger.error(f"Error in stream generation: {str(e)}", exc_info=True)
         yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
 
-def stream_agent(agent_spec:ReactAgentSpec, inputs:dict, logger:logging.Logger, thread_id:str = None, collection:str = None):
+def stream_agent(agent_spec:ReactAgentSpec, inputs:dict, logger:logging.Logger, config:dict, collection:str = None):
     logger.info(f"Received request with message: {inputs.message}")
     agent_input = {"messages": [{"content": inputs.message, "role": "user"}]}
     logger.debug(f"Agent input: {json.dumps(agent_input)}")
     return StreamingResponse(
-        ollama_generate(agent_spec, agent_input, logger, thread_id, collection),
+        ollama_generate(agent_spec, agent_input, logger, config, collection),
         media_type="text/event-stream"
     )

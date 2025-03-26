@@ -14,6 +14,13 @@ import logging
 from utils import stream_callable
 from models import DocLoaderState
 
+def assemble_loader_config(collection:str, user_id:str):
+    return {
+        "configurable": {
+            "collection": collection,
+            "user_id": user_id
+        }
+    }
 def postgres_writer_node(state: DocLoaderState):
     embeddings = OllamaEmbeddings(model="nomic-embed-text:latest")
     DB_URI = os.getenv("DOC_DB_URI")
