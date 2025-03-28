@@ -10,7 +10,7 @@ A wider feature set is planned, but the current focus is on achieving stability 
 
 ## Current Features
 
-- **Azure OIDC Auth**: Authenticate , identify, and authorize users for personalized pipelines. Support for more providers is planned.
+- **OIDC Auth**: Authenticate , identify, and authorize users for personalized pipelines. Supports generic OIDC configurations.
 - **Kubernetes Backend Configs**: Deploy supporting tools flexibly in any Kubernetes environment, including locally.
 - **Python Document Parsing**: Parse, split, embed, and store Python files in Postgres-backed vector collections
 - **Easy ReAct Agent Streaming**: Provide a simple spec with a model and a set of tools, let our helper functions do the rest.
@@ -45,16 +45,27 @@ git clone https://github.com/thecodekitchen/docboy.git
 cd docboy
 # Use the provided script to create the database secrets. 
 # Be sure to replace the placeholder arguments with secure values and note them elsewhere.
-source ./k8s/create_secrets.sh <redis-password> <postgres-root-password>
+# If not using Keycloak, omit third argument
+source ./k8s/create_secrets.sh <redis-password> <postgres-root-password> <keycloak-temporary-password>
+# If not using Keycloak, run
 sudo microk8s kubectl apply -f ./k8s/master_manifest.yml
+# Otherwise, run
+sudo microk8s kubectl apply -f ./k8s/master_manifest_full.yml
 ```
-5. Run port forwards to expose services
+5. Run port forwards in separate terminals to expose services
 ```
 sudo microk8s kubectl port-forward svc/postgres 5432:5432
 sudo microk8s kubectl port-forward svc/redis 6379:6379
 sudo microk8s kubectl port-forward svc/ollama 11434:11434
+# If using keycloak
+sudo microk8s kubectl port-forward svc/keycloak 80:5555
 ```
-6. Start the app and play with it
+5.5. (If using Keycloak) Follow instructions [here](https://www.keycloak.org/getting-started/getting-started-docker#_log_in_to_the_admin_console) to set up client
+- Make sure you uncheck "confidential client" and check both "standard flow" and "implicit flow" to enable the OIDC hybrid flow implemented here.
+6. Fill out and rename .env.example to .env
+- Fill out whichever values are relevant to your integration stack.
+- Values prefixed with AZ are intended to denote Azure values, KC denotes Keycloak. Add other providers as needed.
+7. Start the app and play with it
 ```
 cd app
 python3 -m venv docboy_venv
@@ -63,6 +74,7 @@ pip install -r requirements.txt
 fastapi dev
 ```
 
+Front end example coming soon!
 
 ## Contributing
 
