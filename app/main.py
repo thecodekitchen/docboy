@@ -8,11 +8,11 @@ import dotenv
 import redis
 import os
 import uuid
-from models import ChatInput, AuthTokenRequest, RefreshRequest
+from models import ChatInput
 from agents import math_nerd, web_nerd, regular_nerd, stream_agent, assemble_thread_config
 from loaders import stream_loader, python_loader_graph, assemble_loader_config
 from draw import draw_pipeline
-from azure_oidc_auth import signup, check_session, refresh_session
+from oidc_auth import login, check_session, refresh_session, AuthTokenRequest, RefreshRequest
 
 
 logging.basicConfig(
@@ -39,13 +39,13 @@ app.add_middleware(
 
     
 
-@app.post("/oauth_signup")
+@app.post("/oauth_login")
 async def oauth_token(request:AuthTokenRequest, session: Session = Depends(session_manager.use_session)):
-    return signup(request, session)
+    return login(request, session, logger)
 
 @app.post("/oauth_refresh")
 async def oauth_refresh(request:RefreshRequest, session: Session = Depends(session_manager.use_session)):
-    return refresh_session(session, request.id_token)
+    return refresh_session(session, request.id_token, logger)
 
 @app.get("/draw/{pipeline}")
 async def draw_pipeline_graph(pipeline: str):
@@ -57,7 +57,7 @@ async def regular_nerd_chat(
     thread_id: str = None,
     collection:str=None,
     session: Session = Depends(session_manager.use_session)):
-    session_invalid = check_session(session)
+    session_invalid = check_session(session, logger)
     if session_invalid:
         return session_invalid
     if not thread_id:
@@ -76,7 +76,7 @@ async def math_nerd_chat(
     thread_id: str = None,
     collection:str=None,
     session: Session = Depends(session_manager.use_session)):
-    session_invalid = check_session(session)
+    session_invalid = check_session(session, logger)
     if session_invalid:
         return session_invalid
     if not thread_id:
@@ -95,7 +95,7 @@ async def web_nerd_chat(
     thread_id: str = None,
     collection:str=None,
     session: Session = Depends(session_manager.use_session)):
-    session_invalid = check_session(session)
+    session_invalid = check_session(session, logger)
     if session_invalid:
         return session_invalid
     if not thread_id:
@@ -114,7 +114,7 @@ async def upload_python_file(
     collection: str, 
     bg: BackgroundTasks,
     session: Session = Depends(session_manager.use_session)):
-    session_invalid = check_session(session)
+    session_invalid = check_session(session, logger)
     if session_invalid:
         return session_invalid
     config = assemble_loader_config(collection, session["user_id"])
