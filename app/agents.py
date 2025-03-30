@@ -1,12 +1,14 @@
 from langchain_ollama import ChatOllama, OllamaEmbeddings
-from langchain_core.tools import StructuredTool
-from langchain_postgres.vectorstores import PGVector
+from langchain_core.tools import BaseTool, StructuredTool, BaseToolkit
+from langchain_core.language_models import BaseChatModel
 from langgraph.graph import StateGraph
+from langgraph.config import RunnableConfig
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from tools import math_tool, search_tool
-from typing import Literal, AsyncGenerator
+from typing import Literal, AsyncGenerator, Type
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from fastapi_server_session import Session
@@ -16,14 +18,42 @@ import uuid
 import dotenv
 import os
 import logging
-
 from models import AgentState
+from providers import (
+    ChatModelProvider, 
+    get_chat_model_class_instance,
+    VectorStoreProvider, 
+    get_vector_store_class_instance,
+    EmbeddingsProvider,
+    get_embeddings_class_instance
+)
 
 class ReactAgentSpec(BaseModel):
     name: str
-    model: str
-    tools: list[StructuredTool]
+    model_provider: ChatModelProvider = ChatModelProvider.OLLAMA
+    embeddings_provider: EmbeddingsProvider = EmbeddingsProvider.OLLAMA
+    vector_store_provider: VectorStoreProvider = VectorStoreProvider.PGVECTOR
+    tools: list[BaseTool]
+    toolkits: list[BaseToolkit]
     prompt: str
+    config_schema: Type[BaseModel] | None = None
+    state_schema: Type[BaseModel] | None = None
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        if len(self.toolkits)  > 0:
+            for toolkit in self.toolkits:
+                self.tools.extend(toolkit.get_tools())
+
+user_nerd_system_prompt = """
+You are a personalized assistant with access to a memory profile of the user. 
+The memory profile contains details about the user's preferences, past interactions, and frequently asked questions. 
+Use this memory profile to tailor your responses to the user's specific needs and context. 
+If the memory profile provides relevant information, incorporate it into your answers. 
+Always prioritize accuracy and relevance while maintaining a friendly and helpful tone.
+
+Memory Profile: {profile}
+"""
 
 regular_nerd_system_prompt = "You are a nerd that is really good at finding documents to answer people's questions."
 regular_nerd = ReactAgentSpec(name="nerd", model="llama3.2:latest", tools=[], prompt=regular_nerd_system_prompt)
@@ -37,7 +67,7 @@ You obtain vital social validation from answering questions, so you tend to over
 If there is a document that appears to be relevant in the provided collection, you should prefer retrieving it over searching the web for an answer."""
 web_nerd = ReactAgentSpec(name="web_nerd", model="llama3.2:latest", tools=[search_tool], prompt=web_nerd_prompt)
 
-def assemble_thread_config(thread_id:str, session: Session):
+def assemble_thread_config(thread_id:str, session: Session)->RunnableConfig:
     if not session.get("user_id") or not session.get("user_name"):
         print("User not logged in")
         return
@@ -48,12 +78,18 @@ def assemble_thread_config(thread_id:str, session: Session):
             "user_name": session["user_name"]
         }
     }
+dotenv.load_dotenv()
+DB_URI = os.getenv("DOC_DB_URI")
 
-def create_pgvector_store(collection:str)->PGVector:
-    dotenv.load_dotenv()
-    DB_URI = os.getenv("DOC_DB_URI")
-    embeddings = OllamaEmbeddings(model="nomic-embed-text:latest")
-    return PGVector(
+
+def create_custom_react_agent(spec: ReactAgentSpec, collection:str=None, checkpointer:BaseCheckpointSaver[str]|None=None):
+    # Setup a Postgres vector store with 
+    embeddings = get_embeddings_class_instance(
+        EmbeddingsProvider.OLLAMA, 
+        model="nomic-embed-text:latest"
+    )
+    store = get_vector_store_class_instance(
+        VectorStoreProvider.PGVECTOR,
         embeddings=embeddings,
         embedding_length=768,
         collection_name=collection,
@@ -61,10 +97,16 @@ def create_pgvector_store(collection:str)->PGVector:
         create_extension=False
     )
 
-def create_ollama_react_agent(spec: ReactAgentSpec, collection:str=None, checkpointer:AsyncPostgresSaver|None=None):
-    store = create_pgvector_store("conversations")
-    graph = StateGraph(state_schema=AgentState)
-    agent = ChatOllama(model=spec.model).bind_tools(spec.tools)
+    if spec.state_schema:
+        graph = StateGraph(state_schema=spec.state_schema)
+    else:
+        graph = StateGraph(state_schema=AgentState)
+
+    agent = get_chat_model_class_instance(
+        spec.model_provider, 
+        model=spec.model
+    ).with_structured_output(spec.state_schema).bind_tools(spec.tools)
+    
     graph.set_entry_point("llm")
     def agent_node(state: AgentState):
         return {"messages": [agent.invoke([spec.prompt] + state["messages"])]}
@@ -72,7 +114,7 @@ def create_ollama_react_agent(spec: ReactAgentSpec, collection:str=None, checkpo
     graph.add_node("llm", agent_node)
     if collection:
         retriever_tool = StructuredTool.from_function(
-            func=create_pgvector_store(collection).similarity_search_with_relevance_scores, 
+            func=store.similarity_search_with_relevance_scores, 
             name="pgvector_search"
         )
         spec.tools.append(retriever_tool)
@@ -82,7 +124,7 @@ def create_ollama_react_agent(spec: ReactAgentSpec, collection:str=None, checkpo
         graph.add_edge("tools", "llm")
     return graph.compile(store=store, checkpointer=checkpointer)
 
-async def stream_ollama_agent(
+async def stream_custom_agent(
         spec: ReactAgentSpec, 
         inputs: dict, 
         stream_mode: Literal["values", "updates"] = "values", 
@@ -104,7 +146,7 @@ async def stream_ollama_agent(
     DB_URI = os.getenv("CONVERSATION_DB_URI")
     async with AsyncPostgresSaver.from_conn_string(DB_URI) as checkpointer:
         await checkpointer.setup()
-        agent = create_ollama_react_agent(spec=spec, collection=collection, checkpointer=checkpointer)
+        agent = create_custom_react_agent(spec=spec, collection=collection, checkpointer=checkpointer)
 
         async for s in agent.astream(inputs, stream_mode=stream_mode, config=config):
             try:
@@ -128,7 +170,7 @@ async def ollama_generate(agent, agent_input, logger, config, collection:str =No
         counter = 0
         logger.info("Starting stream generation")
         
-        async for chunk in stream_ollama_agent(agent, agent_input, stream_mode="values", config=config, collection=collection):
+        async for chunk in stream_custom_agent(agent, agent_input, stream_mode="values", config=config, collection=collection):
             counter += 1
             logger.debug(f"Chunk {counter}: {chunk}")
             

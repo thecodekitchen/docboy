@@ -1,0 +1,5 @@
+{
+    "memory": "from langgraph.store.memory import InMemoryStore",
+    "postgres_async": "from langgraph.store.postgres import AsyncPostgresStore",
+    "postgres": "from langgraph.store.postgres import PostgresStore"
+}

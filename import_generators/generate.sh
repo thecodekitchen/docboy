@@ -1,0 +1,11 @@
+#!/bin/bash
+
+python3 generate_chat_model_imports.py
+python3 generate_doc_loader_imports.py
+python3 generate_embeddings_imports.py
+python3 generate_graph_store_imports.py
+python3 generate_chain_store_imports.py
+python3 generate_llm_imports.py
+python3 generate_retriever_imports.py
+python3 generate_vector_store_imports.py
+python3 generate_toolkit_imports.py
