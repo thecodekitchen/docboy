@@ -3,3 +3,4 @@ pg_volume/
 docboy_venv/
 __pycache__/
 app/__pycache__/
+docboy-dev.tar

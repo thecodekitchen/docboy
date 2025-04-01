@@ -9,9 +9,9 @@ import redis
 import os
 import uuid
 from models import ChatInput
-from agents import math_nerd, web_nerd, regular_nerd, stream_agent, assemble_thread_config
+from agents import math_nerd, web_nerd, regular_nerd, stream_custom_agent, assemble_thread_config
 from loaders import stream_loader, python_loader_graph, assemble_loader_config
-from draw import draw_pipeline
+from draw import draw_pregel, draw_agent
 from oidc_auth import login, check_session, refresh_session, AuthTokenRequest, RefreshRequest
 
 
@@ -49,7 +49,20 @@ async def oauth_refresh(request:RefreshRequest, session: Session = Depends(sessi
 
 @app.get("/draw/{pipeline}")
 async def draw_pipeline_graph(pipeline: str):
-    draw_pipeline(pipeline)
+    match pipeline:
+        case "math_nerd":
+            draw_agent(math_nerd)
+        case "web_nerd":
+            draw_agent(web_nerd)
+        case "regular_nerd":
+            draw_agent(regular_nerd)
+        case "python_loader":
+            draw_pregel(python_loader_graph())
+        case _:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Pipeline not found"}
+            )
     
 @app.post("/regular_nerd")
 async def regular_nerd_chat(
@@ -68,7 +81,7 @@ async def regular_nerd_chat(
             status_code=403,
             content={"error": "User not logged in"}
         )
-    return stream_agent(regular_nerd, inputs, logger, config, collection)
+    return stream_custom_agent(regular_nerd, inputs, logger, config, collection)
 
 @app.post("/math_nerd")
 async def math_nerd_chat(
@@ -87,7 +100,7 @@ async def math_nerd_chat(
             status_code=403,
             content={"error": "User not logged in"}
         )
-    return stream_agent(math_nerd, inputs, logger, config, collection)
+    return stream_custom_agent(math_nerd, inputs, logger, config, collection)
 
 @app.post("/web_nerd") 
 async def web_nerd_chat(
@@ -106,7 +119,7 @@ async def web_nerd_chat(
             status_code=403,
             content={"error": "User not logged in"}
         )
-    return stream_agent(web_nerd, inputs, logger, config, collection)
+    return stream_custom_agent(web_nerd, inputs, logger, config, collection)
 
 @app.post("/upload/python")
 async def upload_python_file(
@@ -123,7 +136,7 @@ async def upload_python_file(
             status_code=403,
             content={"error": "User not logged in"}
         )
-    return stream_loader(python_loader_graph(), collection, files, bg, logger)
+    return stream_loader(python_loader_graph(), config, files, bg, logger)
     
 @app.get("/health")
 async def health_check():

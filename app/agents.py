@@ -4,6 +4,7 @@ from langchain_core.language_models import BaseChatModel
 from langgraph.graph import StateGraph
 from langgraph.config import RunnableConfig
 from langgraph.prebuilt import ToolNode, tools_condition
+from langchain_ollama import ChatOllama
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -18,24 +19,27 @@ import uuid
 import dotenv
 import os
 import logging
-from models import AgentState
+from models import BaseAgentState
+
 from providers import (
     ChatModelProvider, 
     get_chat_model_class_instance,
     VectorStoreProvider, 
-    get_vector_store_class_instance,
+    get_vector_store_class,
     EmbeddingsProvider,
     get_embeddings_class_instance
 )
 
 class ReactAgentSpec(BaseModel):
     name: str
-    model_provider: ChatModelProvider = ChatModelProvider.OLLAMA
-    embeddings_provider: EmbeddingsProvider = EmbeddingsProvider.OLLAMA
-    vector_store_provider: VectorStoreProvider = VectorStoreProvider.PGVECTOR
-    tools: list[BaseTool]
-    toolkits: list[BaseToolkit]
     prompt: str
+    chat_model_provider: ChatModelProvider = ChatModelProvider.OLLAMA
+    chat_model_config: dict = {}
+    embeddings_provider: EmbeddingsProvider = EmbeddingsProvider.OLLAMA
+    embeddings_config: dict = {}
+    vector_store_provider: VectorStoreProvider = VectorStoreProvider.PGVECTOR
+    tools: list[BaseTool] = []
+    toolkits: list[BaseToolkit] = []
     config_schema: Type[BaseModel] | None = None
     state_schema: Type[BaseModel] | None = None
 
@@ -86,9 +90,9 @@ def create_custom_react_agent(spec: ReactAgentSpec, collection:str=None, checkpo
     # Setup a Postgres vector store with 
     embeddings = get_embeddings_class_instance(
         EmbeddingsProvider.OLLAMA, 
-        model="nomic-embed-text:latest"
+        **spec.embeddings_config
     )
-    store = get_vector_store_class_instance(
+    store = get_vector_store_class.from_collection(
         VectorStoreProvider.PGVECTOR,
         embeddings=embeddings,
         embedding_length=768,
@@ -100,31 +104,34 @@ def create_custom_react_agent(spec: ReactAgentSpec, collection:str=None, checkpo
     if spec.state_schema:
         graph = StateGraph(state_schema=spec.state_schema)
     else:
-        graph = StateGraph(state_schema=AgentState)
+        graph = StateGraph(state_schema=BaseAgentState)
 
     agent = get_chat_model_class_instance(
         spec.model_provider, 
-        model=spec.model
+        **spec.chat_model_config
     ).with_structured_output(spec.state_schema).bind_tools(spec.tools)
+    if not agent:
+        raise ValueError("Agent not found")
     
     graph.set_entry_point("llm")
-    def agent_node(state: AgentState):
+    def agent_node(state):
         return {"messages": [agent.invoke([spec.prompt] + state["messages"])]}
 
     graph.add_node("llm", agent_node)
-    if collection:
-        retriever_tool = StructuredTool.from_function(
-            func=store.similarity_search_with_relevance_scores, 
-            name="pgvector_search"
-        )
-        spec.tools.append(retriever_tool)
+    # Below functionality may be implied already in Langgraph's memory architecture. Testing in progress.
+    # if collection:
+    #     retriever_tool = StructuredTool.from_function(
+    #         func=store.similarity_search_with_relevance_scores, 
+    #         name="pgvector_search"
+    #     )
+    #     spec.tools.append(retriever_tool)
     if len(spec.tools)>0:
         graph.add_node("tools", ToolNode(spec.tools))
         graph.add_conditional_edges("llm", tools_condition)
         graph.add_edge("tools", "llm")
     return graph.compile(store=store, checkpointer=checkpointer)
 
-async def stream_custom_agent(
+async def stream_custom_agent_state(
         spec: ReactAgentSpec, 
         inputs: dict, 
         stream_mode: Literal["values", "updates"] = "values", 
@@ -148,11 +155,11 @@ async def stream_custom_agent(
         await checkpointer.setup()
         agent = create_custom_react_agent(spec=spec, collection=collection, checkpointer=checkpointer)
 
-        async for s in agent.astream(inputs, stream_mode=stream_mode, config=config):
+        async for stream_output in agent.astream(inputs, stream_mode=stream_mode, config=config):
             try:
                 # Get the latest message
-                if "messages" in s:
-                    message = s["messages"][-1]
+                if "messages" in stream_output:
+                    message = stream_output["messages"][-1]
                     print(str(message))
                     if isinstance(message, ToolMessage):
                         yield json.dumps({"type": "ToolMessage", "content": message.content, "thread": config["configurable"]["thread_id"]})
@@ -165,12 +172,12 @@ async def stream_custom_agent(
             except Exception as e:
                 yield json.dumps({"type": "error", "content": str(e)})
 
-async def ollama_generate(agent, agent_input, logger, config, collection:str =None):
+async def generate_agent_stream(agent, agent_input, logger, config, collection:str =None):
     try:
         counter = 0
         logger.info("Starting stream generation")
         
-        async for chunk in stream_custom_agent(agent, agent_input, stream_mode="values", config=config, collection=collection):
+        async for chunk in stream_custom_agent_state(agent, agent_input, stream_mode="values", config=config, collection=collection):
             counter += 1
             logger.debug(f"Chunk {counter}: {chunk}")
             
@@ -186,11 +193,11 @@ async def ollama_generate(agent, agent_input, logger, config, collection:str =No
         logger.error(f"Error in stream generation: {str(e)}", exc_info=True)
         yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
 
-def stream_agent(agent_spec:ReactAgentSpec, inputs:dict, logger:logging.Logger, config:dict, collection:str = None):
+def stream_custom_agent(agent_spec:ReactAgentSpec, inputs:dict, logger:logging.Logger, config:dict, collection:str = None):
     logger.info(f"Received request with message: {inputs.message}")
     agent_input = {"messages": [{"content": inputs.message, "role": "user"}]}
     logger.debug(f"Agent input: {json.dumps(agent_input)}")
     return StreamingResponse(
-        ollama_generate(agent_spec, agent_input, logger, config, collection),
+        generate_agent_stream(agent_spec, agent_input, logger, config, collection),
         media_type="text/event-stream"
     )

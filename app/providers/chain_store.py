@@ -12,7 +12,7 @@ chain_store_imports = {
     "upstash_redis": "from langchain_community.storage.upstash_redis import UpstashRedisStore"
 }
 
-class ChainStoreProvider(Enum):
+class ChainStoreProvider(str, Enum):
     ASTRADB = "astradb"
     ASTRADB_BYTES = "astradb_bytes"
     CASSANDRA_BYTES = "cassandra_bytes"

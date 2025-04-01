@@ -23,12 +23,6 @@ class UserProfile(BaseModel):
 class UserAgentState(BaseAgentState):
     user_profile: UserProfile | None = None
 
-class DocLoaderState(BaseModel):
-    collection: str
-    files: list[str]
-    documents: list[Document] | None = None
-    doc_ids: list[str] | None = None
-
 #Config Schemas
 class AgentConfig(BaseModel):
     thread_id: str

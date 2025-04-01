@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docboy-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: docboy-dev
+  template:
+    metadata:
+      labels:
+        app: docboy-dev
+    spec:
+      containers:
+      - name: docboy-dev
+        image: docboy-dev:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - name: hot-reload
+          mountPath: /app
+      volumes:
+      - name: hot-reload
+        hostPath:
+          path: /home/atd/langchain/docboy/app
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: docboy-dev
+spec:
+  selector:
+    app: docboy-dev
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP
